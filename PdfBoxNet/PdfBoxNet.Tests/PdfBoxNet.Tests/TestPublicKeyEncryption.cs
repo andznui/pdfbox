@@ -1,0 +1,500 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+using System;
+using System.Collections.Generic;
+using Xunit;
+using org.apache.pdfbox;
+using org.apache.pdfbox.io;
+using org.apache.pdfbox.pdmodel;
+using org.apache.pdfbox.pdmodel.encryption;
+using org.apache.pdfbox.text;
+
+namespace PdfBoxNet.Tests
+{
+    /// <summary>
+    /// Tests for public key encryption. These tests are not perfect - to be sure, encrypt a file by
+    /// using a certificate exported from your digital id in Adobe Reader, and then open that file with
+    /// Adobe Reader. Do this with every key length.
+    /// </summary>
+    public class TestPublicKeyEncryption
+    {
+        private static readonly java.io.File TESTRESULTSDIR = new java.io.File("target/test-output/crypto");
+
+        private AccessPermission permission1;
+        private AccessPermission permission2;
+
+        private PublicKeyRecipient recipient1;
+        private PublicKeyRecipient recipient2;
+
+        private string keyStore1;
+        private string keyStore2;
+
+        private string password1;
+        private string password2;
+
+        private PDDocument document;
+
+        private string text;
+        private string producer;
+
+        public int keyLength;
+
+        /// <summary>
+        /// Values for keyLength test parameter.
+        /// </summary>
+        public static IEnumerable<object[]> keyLengths()
+        {
+            yield return new object[] { 40 };
+            yield return new object[] { 128 };
+            yield return new object[] { 256 };
+        }
+
+        public TestPublicKeyEncryption()
+        {
+            try
+            {
+                if (!TESTRESULTSDIR.exists())
+                {
+                    TESTRESULTSDIR.mkdirs();
+                }
+
+                permission1 = new AccessPermission();
+                permission1.setCanAssembleDocument(false);
+                permission1.setCanExtractContent(false);
+                permission1.setCanExtractForAccessibility(true);
+                permission1.setCanFillInForm(false);
+                permission1.setCanModify(false);
+                permission1.setCanModifyAnnotations(false);
+                permission1.setCanPrint(false);
+                permission1.setCanPrintFaithful(false);
+
+                permission2 = new AccessPermission();
+                permission2.setCanAssembleDocument(false);
+                permission2.setCanExtractContent(false);
+                permission2.setCanExtractForAccessibility(true);
+                permission2.setCanFillInForm(false);
+                permission2.setCanModify(false);
+                permission2.setCanModifyAnnotations(false);
+                permission2.setCanPrint(true); // it is true now !
+                permission2.setCanPrintFaithful(false);
+
+                recipient1 = getRecipient("test1.der", permission1);
+                recipient2 = getRecipient("test2.der", permission2);
+
+                password1 = "test1";
+                password2 = "test2";
+
+                keyStore1 = "test1.pfx";
+                keyStore2 = "test2.pfx";
+
+                var testFile = new java.io.File("target/pdfs/test.pdf");
+                if (testFile.exists())
+                {
+                    document = Loader.loadPDF(testFile);
+                    text = new PDFTextStripper().getText(document);
+                    producer = document.getDocumentInformation().getProducer();
+                    document.setVersion(1.7f);
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during setUp: " + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail("Exception during setUp: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Protect a document with certificate 1 and try to open it with
+        /// certificate 2 and catch the exception.
+        /// </summary>
+        [Theory]
+        [MemberData(nameof(keyLengths))]
+        public void testProtectionError(int keyLength)
+        {
+            try
+            {
+                if (document == null)
+                {
+                    return; // Skip test if document doesn't exist
+                }
+
+                PublicKeyProtectionPolicy policy = new PublicKeyProtectionPolicy();
+                policy.addRecipient(recipient1);
+                policy.setEncryptionKeyLength(keyLength);
+                document.protect(policy);
+
+                java.io.File file = save("testProtectionError", keyLength);
+                try
+                {
+                    using (PDDocument encryptedDoc = reload(file, password2, getKeyStore(keyStore2)))
+                    {
+                        Assert.True(encryptedDoc.isEncrypted());
+                        Assert.Fail("No exception when using an incorrect decryption key");
+                    }
+                }
+                catch (IOException ex)
+                {
+                    string msg = ex.Message;
+                    Assert.True(msg.Contains("serial-#: rid 2 vs. cert 3"), "not the expected exception: " + msg);
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testProtectionError: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Protect a document with a public certificate and try to open it
+        /// with the corresponding private certificate.
+        /// </summary>
+        [Theory]
+        [MemberData(nameof(keyLengths))]
+        public void testProtection(int keyLength)
+        {
+            try
+            {
+                if (document == null)
+                {
+                    return; // Skip test if document doesn't exist
+                }
+
+                PublicKeyProtectionPolicy policy = new PublicKeyProtectionPolicy();
+                policy.addRecipient(recipient1);
+                policy.setEncryptionKeyLength(keyLength);
+                document.protect(policy);
+
+                java.io.File file = save("testProtection", keyLength);
+                using (PDDocument encryptedDoc = reload(file, password1, getKeyStore(keyStore1)))
+                {
+                    Assert.True(encryptedDoc.isEncrypted());
+
+                    AccessPermission permission = encryptedDoc.getCurrentAccessPermission();
+                    Assert.False(permission.canAssembleDocument());
+                    Assert.False(permission.canExtractContent());
+                    Assert.True(permission.canExtractForAccessibility());
+                    Assert.False(permission.canFillInForm());
+                    Assert.False(permission.canModify());
+                    Assert.False(permission.canModifyAnnotations());
+                    Assert.False(permission.canPrint());
+                    Assert.False(permission.canPrintFaithful());
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testProtection: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Protect the document for 2 recipients and try to open it.
+        /// </summary>
+        [Theory]
+        [MemberData(nameof(keyLengths))]
+        public void testMultipleRecipients(int keyLength)
+        {
+            try
+            {
+                if (document == null)
+                {
+                    return; // Skip test if document doesn't exist
+                }
+
+                PublicKeyProtectionPolicy policy = new PublicKeyProtectionPolicy();
+                policy.addRecipient(recipient1);
+                policy.addRecipient(recipient2);
+                policy.setEncryptionKeyLength(keyLength);
+                document.protect(policy);
+
+                // open first time
+                java.io.File file = save("testMultipleRecipients", keyLength);
+                using (PDDocument encryptedDoc1 = reload(file, password1, getKeyStore(keyStore1)))
+                {
+                    AccessPermission permission = encryptedDoc1.getCurrentAccessPermission();
+                    Assert.False(permission.canAssembleDocument());
+                    Assert.False(permission.canExtractContent());
+                    Assert.True(permission.canExtractForAccessibility());
+                    Assert.False(permission.canFillInForm());
+                    Assert.False(permission.canModify());
+                    Assert.False(permission.canModifyAnnotations());
+                    Assert.False(permission.canPrint());
+                    Assert.False(permission.canPrintFaithful());
+                }
+
+                // open second time
+                using (PDDocument encryptedDoc2 = reload(file, password2, getKeyStore(keyStore2)))
+                {
+                    AccessPermission permission = encryptedDoc2.getCurrentAccessPermission();
+                    Assert.False(permission.canAssembleDocument());
+                    Assert.False(permission.canExtractContent());
+                    Assert.True(permission.canExtractForAccessibility());
+                    Assert.False(permission.canFillInForm());
+                    Assert.False(permission.canModify());
+                    Assert.False(permission.canModifyAnnotations());
+                    Assert.True(permission.canPrint());
+                    Assert.False(permission.canPrintFaithful());
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testMultipleRecipients: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Reloads the given document from a file and check some contents.
+        /// </summary>
+        private PDDocument reload(java.io.File file, string decryptionPassword, java.io.InputStream keyStore)
+        {
+            PDDocument doc2 = Loader.loadPDF(file, decryptionPassword,
+                    keyStore, null, IOUtils.createMemoryOnlyStreamCache());
+            Assert.Equal(text, new PDFTextStripper().getText(doc2));
+            Assert.Equal(producer, doc2.getDocumentInformation().getProducer());
+            return doc2;
+        }
+
+        /// <summary>
+        /// Returns a recipient specification with the given access permissions
+        /// and an X.509 certificate read from the given classpath resource.
+        /// </summary>
+        private static PublicKeyRecipient getRecipient(string certificate, AccessPermission permission)
+        {
+            try
+            {
+                // Use C# Assembly resource loading
+                var resourceStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream(certificate);
+                if (resourceStream == null)
+                {
+                    return null;
+                }
+
+                // Convert .NET stream to Java InputStream
+                using (java.io.InputStream input = new ikvm.io.InputStreamWrapper(resourceStream))
+                {
+                    // Use Java CertificateFactory
+                    java.security.cert.CertificateFactory factory =
+                        java.security.cert.CertificateFactory.getInstance("X.509");
+                    PublicKeyRecipient recipient = new PublicKeyRecipient();
+                    recipient.setPermission(permission);
+                    recipient.setX509((java.security.cert.X509Certificate)factory.generateCertificate(input));
+                    return recipient;
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private java.io.InputStream getKeyStore(string name)
+        {
+            var resourceStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream(name);
+            if (resourceStream == null)
+            {
+                return null;
+            }
+            return new ikvm.io.InputStreamWrapper(resourceStream);
+        }
+
+        private java.io.File save(string name, int keyLength)
+        {
+            try
+            {
+                java.io.File file = new java.io.File(TESTRESULTSDIR, name + "-" + keyLength + "bit.pdf");
+                document.save(file);
+                return file;
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during save: " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// PDFBOX-4421: Read a file encrypted with AES128 but not with PDFBox, and with missing /Length
+        /// entry.
+        /// </summary>
+        [Fact]
+        public void testReadPubkeyEncryptedAES128()
+        {
+            try
+            {
+                var resourceStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("AESkeylength128.pdf");
+                if (resourceStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                var keystoreStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("PDFBOX-4421-keystore.pfx");
+                if (keystoreStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                // Convert C# streams to Java InputStreams using IKVM wrapper
+                using (PDDocument doc = Loader.loadPDF(
+                        RandomAccessReadBuffer.createBufferFromStream(new ikvm.io.InputStreamWrapper(resourceStream)),
+                        "w!z%C*F-JaNdRgUk",
+                        new ikvm.io.InputStreamWrapper(keystoreStream),
+                        "testnutzer"))
+                {
+                    Assert.Equal("PublicKeySecurityHandler",
+                            doc.getEncryption().getSecurityHandler().GetType().Name);
+                    Assert.Equal(128, doc.getEncryption().getSecurityHandler().getKeyLength());
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    Assert.Equal("Key length: 128", stripper.getText(doc).Trim());
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testReadPubkeyEncryptedAES128: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// PDFBOX-4421: Read a file encrypted with AES128 but not with PDFBox, and with missing /Length
+        /// entry.
+        /// </summary>
+        [Fact]
+        public void testReadPubkeyEncryptedAES256()
+        {
+            try
+            {
+                var resourceStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("AESkeylength256.pdf");
+                if (resourceStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                var keystoreStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("PDFBOX-4421-keystore.pfx");
+                if (keystoreStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                // Convert C# streams to Java InputStreams using IKVM wrapper
+                using (PDDocument doc = Loader.loadPDF(
+                        RandomAccessReadBuffer.createBufferFromStream(new ikvm.io.InputStreamWrapper(resourceStream)),
+                        "w!z%C*F-JaNdRgUk",
+                        new ikvm.io.InputStreamWrapper(keystoreStream),
+                        "testnutzer"))
+                {
+                    Assert.Equal("PublicKeySecurityHandler",
+                            doc.getEncryption().getSecurityHandler().GetType().Name);
+                    Assert.Equal(256, doc.getEncryption().getSecurityHandler().getKeyLength());
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    Assert.Equal("Key length: 256", stripper.getText(doc).Trim());
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testReadPubkeyEncryptedAES256: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// PDFBOX-5249: Read a file encrypted with AES128 but not with PDFBox, and with exposed
+        /// Metadata.
+        /// </summary>
+        [Fact]
+        public void testReadPubkeyEncryptedAES128withMetadataExposed()
+        {
+            try
+            {
+                var resourceStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("AES128ExposedMeta.pdf");
+                if (resourceStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                var keystoreStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("PDFBOX-5249.p12");
+                if (keystoreStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                // Convert C# streams to Java InputStreams using IKVM wrapper
+                using (PDDocument doc = Loader.loadPDF(
+                        RandomAccessReadBuffer.createBufferFromStream(new ikvm.io.InputStreamWrapper(resourceStream)),
+                        "",
+                        new ikvm.io.InputStreamWrapper(keystoreStream),
+                        "test",
+                        IOUtils.createMemoryOnlyStreamCache()))
+                {
+                    Assert.Equal("PublicKeySecurityHandler",
+                            doc.getEncryption().getSecurityHandler().GetType().Name);
+                    Assert.Equal(128, doc.getEncryption().getSecurityHandler().getKeyLength());
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    stripper.setLineSeparator("\n");
+                    Assert.Equal("AES key length: 128\nwith exposed Metadata", stripper.getText(doc).Trim());
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testReadPubkeyEncryptedAES128withMetadataExposed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// PDFBOX-5249: Read a file encrypted with AES128 but not with PDFBox, and with exposed
+        /// Metadata.
+        /// </summary>
+        [Fact]
+        public void testReadPubkeyEncryptedAES256withMetadataExposed()
+        {
+            try
+            {
+                var resourceStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("AES256ExposedMeta.pdf");
+                if (resourceStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                var keystoreStream = typeof(TestPublicKeyEncryption).Assembly.GetManifestResourceStream("PDFBOX-5249.p12");
+                if (keystoreStream == null)
+                {
+                    return; // Skip test if resource doesn't exist
+                }
+
+                // Convert C# streams to Java InputStreams using IKVM wrapper
+                using (PDDocument doc = Loader.loadPDF(
+                        RandomAccessReadBuffer.createBufferFromStream(new ikvm.io.InputStreamWrapper(resourceStream)),
+                        "",
+                        new ikvm.io.InputStreamWrapper(keystoreStream),
+                        "test",
+                        IOUtils.createMemoryOnlyStreamCache()))
+                {
+                    Assert.Equal("PublicKeySecurityHandler",
+                            doc.getEncryption().getSecurityHandler().GetType().Name);
+                    Assert.Equal(256, doc.getEncryption().getSecurityHandler().getKeyLength());
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    stripper.setLineSeparator("\n");
+                    Assert.Equal("AES key length: 256 \nwith exposed Metadata", stripper.getText(doc).Trim());
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testReadPubkeyEncryptedAES256withMetadataExposed: " + ex.Message);
+            }
+        }
+    }
+}

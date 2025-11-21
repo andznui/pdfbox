@@ -1,0 +1,39 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Package Metadata -->
+    <PackageId>PdfBoxNet</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Your Name</Authors>
+    <Company>Your Company</Company>
+    <Description>.NET wrapper for Apache PDFBox using IKVM. Full PDF support including read, write, merge, extract text, and render pages. Note: JPEG2000 image format not supported.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/yourusername/pdfboxnet</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/yourusername/pdfboxnet</RepositoryUrl>
+    <PackageTags>pdf;pdfbox;ikvm;document;text-extraction;pdf-rendering</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- IKVM Runtime and Maven SDK -->
+    <PackageReference Include="IKVM" Version="8.14.0" />
+    <PackageReference Include="IKVM.Maven.Sdk" Version="1.7.0" />
+
+    <!-- Apache PDFBox from Maven Central -->
+    <MavenReference Include="org.apache.pdfbox:pdfbox" Version="3.0.3" />
+    <MavenReference Include="org.apache.pdfbox:fontbox" Version="3.0.3" />
+    <MavenReference Include="org.apache.pdfbox:pdfbox-io" Version="3.0.3" />
+
+    <!-- Bouncy Castle for encryption support -->
+    <MavenReference Include="org.bouncycastle:bcprov-jdk18on" Version="1.82" />
+    <MavenReference Include="org.bouncycastle:bcpkix-jdk18on" Version="1.82" />
+
+    <!-- System.Drawing for image conversion -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

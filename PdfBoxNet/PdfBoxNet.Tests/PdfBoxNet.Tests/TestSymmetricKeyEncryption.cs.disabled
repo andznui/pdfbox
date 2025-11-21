@@ -1,0 +1,608 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Text;
+using Xunit;
+using org.apache.pdfbox;
+using org.apache.pdfbox.cos;
+using org.apache.pdfbox.io;
+using org.apache.pdfbox.pdmodel;
+using org.apache.pdfbox.pdmodel.encryption;
+using org.apache.pdfbox.pdmodel.graphics.image;
+using org.apache.pdfbox.rendering;
+using org.apache.pdfbox.text;
+
+namespace PdfBoxNet.Tests
+{
+    /// <summary>
+    /// Tests for symmetric key encryption.
+    ///
+    /// IMPORTANT! When making changes in the encryption / decryption methods, do
+    /// also check whether the six generated encrypted files (to be found in
+    /// pdfbox/target/test-output/crypto and named *encrypted.pdf) can be opened with
+    /// Adobe Reader by providing the owner password and the user password.
+    /// </summary>
+    public class TestSymmetricKeyEncryption
+    {
+        private static readonly java.io.File TESTRESULTSDIR = new java.io.File("target/test-output/crypto");
+
+        private static AccessPermission permission;
+
+        const string USERPASSWORD = "1234567890abcdefghijk1234567890abcdefghijk";
+        const string OWNERPASSWORD = "abcdefghijk1234567890abcdefghijk1234567890";
+
+        public TestSymmetricKeyEncryption()
+        {
+            if (!TESTRESULTSDIR.exists())
+            {
+                TESTRESULTSDIR.mkdirs();
+            }
+
+            permission = new AccessPermission();
+            permission.setCanAssembleDocument(false);
+            permission.setCanExtractContent(false);
+            permission.setCanExtractForAccessibility(true);
+            permission.setCanFillInForm(false);
+            permission.setCanModify(false);
+            permission.setCanModifyAnnotations(false);
+            permission.setCanPrint(true);
+            permission.setCanPrintFaithful(false);
+            permission.setReadOnly();
+        }
+
+        /// <summary>
+        /// Test that permissions work as intended: the user psw ("user") is enough
+        /// to open the PDF with possibly restricted rights, the owner psw ("owner")
+        /// gives full permissions. The 3 files of this test were created by Maruan
+        /// Sahyoun, NOT with PDFBox, but with Adobe Acrobat to ensure "the gold
+        /// standard". The restricted permissions prevent printing and text
+        /// extraction. In the 128 and 256 bit encrypted files, AssembleDocument,
+        /// ExtractForAccessibility and PrintDegraded are also disabled.
+        /// </summary>
+        [Fact]
+        public void testPermissions()
+        {
+            try
+            {
+                AccessPermission fullAP = new AccessPermission();
+                AccessPermission restrAP = new AccessPermission();
+                restrAP.setCanPrint(false);
+                restrAP.setCanExtractContent(false);
+                restrAP.setCanModify(false);
+
+                byte[] inputFileAsByteArray = getFileResourceAsByteArray("PasswordSample-40bit.pdf");
+                if (inputFileAsByteArray == null) return; // Skip test if file doesn't exist
+
+                checkPerms(inputFileAsByteArray, "owner", fullAP);
+                checkPerms(inputFileAsByteArray, "user", restrAP);
+                try
+                {
+                    checkPerms(inputFileAsByteArray, "", null);
+                    Assert.Fail("wrong password not detected");
+                }
+                catch (IOException ex)
+                {
+                    Assert.Equal("Cannot decrypt PDF, the password is incorrect", ex.Message);
+                }
+
+                restrAP.setCanAssembleDocument(false);
+                restrAP.setCanExtractForAccessibility(false);
+                restrAP.setCanPrintFaithful(false);
+
+                inputFileAsByteArray = getFileResourceAsByteArray("PasswordSample-128bit.pdf");
+                if (inputFileAsByteArray == null) return; // Skip test if file doesn't exist
+
+                checkPerms(inputFileAsByteArray, "owner", fullAP);
+                checkPerms(inputFileAsByteArray, "user", restrAP);
+                try
+                {
+                    checkPerms(inputFileAsByteArray, "", null);
+                    Assert.Fail("wrong password not detected");
+                }
+                catch (IOException ex)
+                {
+                    Assert.Equal("Cannot decrypt PDF, the password is incorrect", ex.Message);
+                }
+
+                inputFileAsByteArray = getFileResourceAsByteArray("PasswordSample-256bit.pdf");
+                if (inputFileAsByteArray == null) return; // Skip test if file doesn't exist
+
+                checkPerms(inputFileAsByteArray, "owner", fullAP);
+                checkPerms(inputFileAsByteArray, "user", restrAP);
+                try
+                {
+                    checkPerms(inputFileAsByteArray, "", null);
+                    Assert.Fail("wrong password not detected");
+                }
+                catch (IOException ex)
+                {
+                    Assert.Equal("Cannot decrypt PDF, the password is incorrect", ex.Message);
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testPermissions: " + ex.Message);
+            }
+        }
+
+        private void checkPerms(byte[] inputFileAsByteArray, string password,
+                AccessPermission expectedPermissions)
+        {
+            try
+            {
+                using (PDDocument doc = Loader.loadPDF(inputFileAsByteArray, password))
+                {
+                    AccessPermission currentAccessPermission = doc.getCurrentAccessPermission();
+
+                    // check permissions
+                    Assert.Equal(expectedPermissions.isOwnerPermission(), currentAccessPermission.isOwnerPermission());
+                    if (!expectedPermissions.isOwnerPermission())
+                    {
+                        Assert.True(currentAccessPermission.isReadOnly());
+                    }
+                    Assert.Equal(expectedPermissions.canAssembleDocument(), currentAccessPermission.canAssembleDocument());
+                    Assert.Equal(expectedPermissions.canExtractContent(), currentAccessPermission.canExtractContent());
+                    Assert.Equal(expectedPermissions.canExtractForAccessibility(), currentAccessPermission.canExtractForAccessibility());
+                    Assert.Equal(expectedPermissions.canFillInForm(), currentAccessPermission.canFillInForm());
+                    Assert.Equal(expectedPermissions.canModify(), currentAccessPermission.canModify());
+                    Assert.Equal(expectedPermissions.canModifyAnnotations(), currentAccessPermission.canModifyAnnotations());
+                    Assert.Equal(expectedPermissions.canPrint(), currentAccessPermission.canPrint());
+                    Assert.Equal(expectedPermissions.canPrintFaithful(), currentAccessPermission.canPrintFaithful());
+
+                    new PDFRenderer(doc).renderImage(0);
+                }
+            }
+            catch (IOException)
+            {
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Protect a document with a key and try to reopen it with that key and compare.
+        /// </summary>
+        [Fact]
+        public void testProtection()
+        {
+            try
+            {
+                string filename = "Acroform-PDFBOX-2333.pdf";
+                byte[] inputFileAsByteArray = getFileResourceAsByteArray(filename);
+                if (inputFileAsByteArray == null) return; // Skip test if file doesn't exist
+
+                int sizePriorToEncryption = inputFileAsByteArray.Length;
+
+                testSymmEncrForKeySize(filename, 40, false, sizePriorToEncryption, inputFileAsByteArray,
+                        USERPASSWORD, OWNERPASSWORD, permission);
+
+                testSymmEncrForKeySize(filename, 128, false, sizePriorToEncryption, inputFileAsByteArray,
+                        USERPASSWORD, OWNERPASSWORD, permission);
+
+                testSymmEncrForKeySize(filename, 128, true, sizePriorToEncryption, inputFileAsByteArray,
+                        USERPASSWORD, OWNERPASSWORD, permission);
+
+                testSymmEncrForKeySize(filename, 256, true, sizePriorToEncryption, inputFileAsByteArray,
+                        USERPASSWORD, OWNERPASSWORD, permission);
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testProtection: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// PDFBOX-4308: test that index colorspace table string doesn't get
+        /// corrupted when encrypting. This happened because the colorspace was
+        /// referenced twice, once in the resources dictionary and once in an image
+        /// in the resources dictionary, and when saving the PDF the string was saved
+        /// twice, once as a direct object and once as an indirect object (both from
+        /// the same java object). Encryption used the wrong object number and/or the
+        /// object was encrypted twice.
+        /// </summary>
+        [Fact]
+        public void testPDFBox4308()
+        {
+            try
+            {
+                string filename = "PDFBOX-4308.pdf";
+                var file = new java.io.File("target/pdfs/" + filename);
+                if (!file.exists())
+                {
+                    return; // Skip test if file doesn't exist
+                }
+
+                byte[] inputFileAsByteArray = File.ReadAllBytes(file.getAbsolutePath());
+                int sizePriorToEncryption = inputFileAsByteArray.Length;
+
+                testSymmEncrForKeySize(filename, 40, false, sizePriorToEncryption, inputFileAsByteArray,
+                        USERPASSWORD, OWNERPASSWORD, permission);
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testPDFBox4308: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// PDFBOX-5955: test unusual RC4 encryption that has 40 or 48 bits instead of 128.
+        /// </summary>
+        [Fact]
+        public void testPDFBox5955()
+        {
+            try
+            {
+                java.io.File file40bit = new java.io.File("target/pdfs", "PDFBOX-5955-40bit.pdf");
+                java.io.File file48bit = new java.io.File("target/pdfs", "PDFBOX-5955-48bit.pdf");
+
+                if (!file40bit.exists() || !file48bit.exists())
+                {
+                    return; // Skip test if files don't exist
+                }
+
+                using (PDDocument doc = Loader.loadPDF(file40bit))
+                {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    string text = stripper.getText(doc);
+                    Assert.True(text.Contains("0x0446615747"));
+                }
+                using (PDDocument doc = Loader.loadPDF(file40bit, "ownerpass"))
+                {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    string text = stripper.getText(doc);
+                    Assert.True(text.Contains("0x0446615747"));
+                }
+                using (PDDocument doc = Loader.loadPDF(file48bit))
+                {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    string text = stripper.getText(doc);
+                    Assert.True(text.Contains("0x02988E82AFF8"));
+                }
+                using (PDDocument doc = Loader.loadPDF(file48bit, "ownerpass"))
+                {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    string text = stripper.getText(doc);
+                    Assert.True(text.Contains("0x02988E82AFF8"));
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testPDFBox5955: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Protect a document with an embedded PDF with a key and try to reopen it
+        /// with that key and compare.
+        /// </summary>
+        [Fact]
+        public void testProtectionInnerAttachment()
+        {
+            try
+            {
+                string testFileName = "preEnc_20141025_105451.pdf";
+                byte[] inputFileWithEmbeddedFileAsByteArray = getFileResourceAsByteArray(testFileName);
+                if (inputFileWithEmbeddedFileAsByteArray == null) return; // Skip test if file doesn't exist
+
+                int sizeOfFileWithEmbeddedFile = inputFileWithEmbeddedFileAsByteArray.Length;
+
+                java.io.File extractedEmbeddedFile =
+                        extractEmbeddedFile(
+                                new RandomAccessReadBuffer(inputFileWithEmbeddedFileAsByteArray),
+                                "innerFile.pdf");
+
+                testSymmEncrForKeySizeInner(40, false, sizeOfFileWithEmbeddedFile,
+                        inputFileWithEmbeddedFileAsByteArray, extractedEmbeddedFile, USERPASSWORD, OWNERPASSWORD);
+
+                testSymmEncrForKeySizeInner(128, false, sizeOfFileWithEmbeddedFile,
+                        inputFileWithEmbeddedFileAsByteArray, extractedEmbeddedFile, USERPASSWORD, OWNERPASSWORD);
+
+                testSymmEncrForKeySizeInner(128, true, sizeOfFileWithEmbeddedFile,
+                        inputFileWithEmbeddedFileAsByteArray, extractedEmbeddedFile, USERPASSWORD, OWNERPASSWORD);
+
+                testSymmEncrForKeySizeInner(256, true, sizeOfFileWithEmbeddedFile,
+                        inputFileWithEmbeddedFileAsByteArray, extractedEmbeddedFile, USERPASSWORD, OWNERPASSWORD);
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testProtectionInnerAttachment: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// PDFBOX-4453: verify that identical encrypted strings are really decrypted each.
+        /// </summary>
+        [Fact]
+        public void testPDFBox4453()
+        {
+            try
+            {
+                const int TESTCOUNT = 1000;
+                java.io.File file = new java.io.File(TESTRESULTSDIR, "PDFBOX-4453.pdf");
+                using (PDDocument doc = new PDDocument())
+                {
+                    doc.addPage(new PDPage());
+                    for (int i = 0; i < TESTCOUNT; ++i)
+                    {
+                        // strings must be in different dictionaries so that the actual
+                        // encryption key changes
+                        COSDictionary dict = new COSDictionary();
+                        doc.getPage(0).getCOSObject().setItem(COSName.getPDFName("_Test-" + i), dict);
+                        // need two different keys so that there are both encrypted and decrypted COSStrings
+                        // with value "0"
+                        dict.setString("key1", "3");
+                        dict.setString("key2", "0");
+                    }
+
+                    //RC4-40
+                    StandardProtectionPolicy spp =
+                            new StandardProtectionPolicy("12345", "", new AccessPermission());
+                    spp.setEncryptionKeyLength(40);
+                    spp.setPreferAES(false);
+                    doc.protect(spp);
+                    doc.save(file);
+                }
+
+                using (PDDocument doc = Loader.loadPDF(file))
+                {
+                    Assert.True(doc.isEncrypted());
+                    for (int i = 0; i < TESTCOUNT; ++i)
+                    {
+                        COSDictionary dict =
+                                doc.getPage(0).getCOSObject().getCOSDictionary(COSName.getPDFName("_Test-" + i));
+                        Assert.Equal("3", dict.getString("key1"));
+                        Assert.Equal("0", dict.getString("key2"));
+                    }
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testPDFBox4453: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// test AESV3 with R=5 and excess bytes.
+        /// </summary>
+        [Fact]
+        public void testPDFBox5639()
+        {
+            try
+            {
+                java.io.File file = new java.io.File("target/pdfs", "PDFBOX-5639.pdf");
+                if (!file.exists())
+                {
+                    return; // Skip test if file doesn't exist
+                }
+
+                using (PDDocument document = Loader.loadPDF(file, "JUL2023rfi"))
+                {
+                    Assert.Equal(2, document.getNumberOfPages());
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testPDFBox5639: " + ex.Message);
+            }
+        }
+
+        private void testSymmEncrForKeySize(string filename, int keyLength, bool preferAES,
+                int sizePriorToEncr, byte[] inputFileAsByteArray,
+                string userpassword, string ownerpassword,
+                AccessPermission permission)
+        {
+            try
+            {
+                PDDocument document = Loader.loadPDF(inputFileAsByteArray);
+                string prefix = filename + "-Simple-";
+                int numSrcPages = document.getNumberOfPages();
+                PDFRenderer pdfRenderer = new PDFRenderer(document);
+                List<Bitmap> srcImgTab = new List<Bitmap>();
+                List<byte[]> srcContentStreamTab = new List<byte[]>();
+                for (int i = 0; i < numSrcPages; ++i)
+                {
+                    srcImgTab.Add(pdfRenderer.renderImage(i));
+                    using (Stream unfilteredStream = document.getPage(i).getContents())
+                    {
+                        using (MemoryStream ms = new MemoryStream())
+                        {
+                            unfilteredStream.CopyTo(ms);
+                            srcContentStreamTab.Add(ms.ToArray());
+                        }
+                    }
+                }
+
+                using (PDDocument encryptedDoc = encrypt(keyLength, preferAES, sizePriorToEncr, document,
+                        prefix, permission, userpassword, ownerpassword))
+                {
+                    Assert.Equal(numSrcPages, encryptedDoc.getNumberOfPages());
+                    pdfRenderer = new PDFRenderer(encryptedDoc);
+                    for (int i = 0; i < encryptedDoc.getNumberOfPages(); ++i)
+                    {
+                        // compare rendering
+                        Bitmap bim = pdfRenderer.renderImage(i);
+                        ValidateXImage.checkIdent(bim, srcImgTab[i]);
+
+                        // compare content streams
+                        using (Stream unfilteredStream = encryptedDoc.getPage(i).getContents())
+                        {
+                            using (MemoryStream ms = new MemoryStream())
+                            {
+                                unfilteredStream.CopyTo(ms);
+                                byte[] bytes = ms.ToArray();
+                                Assert.Equal(srcContentStreamTab[i], bytes);
+                            }
+                        }
+                    }
+
+                    java.io.File pdfFile = new java.io.File(TESTRESULTSDIR, prefix + keyLength + "-bit-" + (preferAES ? "AES" : "RC4") + "-decrypted.pdf");
+                    encryptedDoc.setAllSecurityToBeRemoved(true);
+                    encryptedDoc.save(pdfFile);
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testSymmEncrForKeySize: " + ex.Message);
+            }
+        }
+
+        // encrypt with keylength and permission, save, check sizes before and after encryption
+        // reopen, decrypt and return document
+        private PDDocument encrypt(int keyLength, bool preferAES, int sizePriorToEncr,
+                PDDocument doc, string prefix, AccessPermission permission,
+                string userpassword, string ownerpassword)
+        {
+            StandardProtectionPolicy spp = new StandardProtectionPolicy(ownerpassword, userpassword,
+                    permission);
+            spp.setEncryptionKeyLength(keyLength);
+            spp.setPreferAES(preferAES);
+
+            // This must have no effect and should only log a warning.
+            doc.setAllSecurityToBeRemoved(true);
+
+            doc.protect(spp);
+
+            java.io.File pdfFile = new java.io.File(TESTRESULTSDIR, prefix + keyLength + "-bit-" + (preferAES ? "AES" : "RC4") + "-encrypted.pdf");
+
+            doc.save(pdfFile);
+            doc.close();
+            long sizeEncrypted = pdfFile.length();
+            Assert.NotEqual(sizeEncrypted, sizePriorToEncr);
+
+            // test with owner password => full permissions
+            PDDocument encryptedDoc = Loader.loadPDF(pdfFile, ownerpassword);
+            Assert.True(encryptedDoc.isEncrypted());
+            Assert.True(encryptedDoc.getCurrentAccessPermission().isOwnerPermission());
+
+            // Older encryption allows to get the user password when the owner password is known
+            PDEncryption encryption = encryptedDoc.getEncryption();
+            int revision = encryption.getRevision();
+            if (revision < 5)
+            {
+                StandardSecurityHandler standardSecurityHandler = new StandardSecurityHandler();
+                int keyLengthInBytes = encryption.getVersion() == 1 ? 5 : encryption.getLength() / 8;
+                byte[] computedUserPassword = standardSecurityHandler.getUserPassword(
+                        Encoding.GetEncoding("ISO-8859-1").GetBytes(ownerpassword),
+                        encryption.getOwnerKey(),
+                        revision,
+                        keyLengthInBytes);
+                Assert.Equal(userpassword.Substring(0, 32), Encoding.GetEncoding("ISO-8859-1").GetString(computedUserPassword));
+            }
+
+            encryptedDoc.close();
+
+            // test with user password => restricted permissions
+            encryptedDoc = Loader.loadPDF(pdfFile, userpassword);
+            Assert.True(encryptedDoc.isEncrypted());
+            Assert.False(encryptedDoc.getCurrentAccessPermission().isOwnerPermission());
+
+            Assert.Equal(permission.getPermissionBytes(), encryptedDoc.getCurrentAccessPermission().getPermissionBytes());
+
+            return encryptedDoc;
+        }
+
+        // extract the embedded file, saves it, and return the extracted saved file
+        private java.io.File extractEmbeddedFile(RandomAccessRead pdfSource, string name)
+        {
+            PDDocument docWithEmbeddedFile = Loader.loadPDF(pdfSource);
+            var catalog = docWithEmbeddedFile.getDocumentCatalog();
+            var names = catalog.getNames();
+            var embeddedFiles = names.getEmbeddedFiles();
+            var embeddedFileNames = embeddedFiles.getNames();
+            Assert.Equal(1, embeddedFileNames.Count);
+            var entry = embeddedFileNames.GetEnumerator();
+            entry.MoveNext();
+            var complexFileSpec = entry.Current.Value;
+            var embeddedFile = complexFileSpec.getEmbeddedFile();
+
+            java.io.File resultFile = new java.io.File(TESTRESULTSDIR, name);
+            using (Stream fos = File.Create(resultFile.getAbsolutePath()))
+            using (Stream inputStream = embeddedFile.createInputStream())
+            {
+                inputStream.CopyTo(fos);
+            }
+
+            Assert.Equal(embeddedFile.getSize(), resultFile.length());
+
+            return resultFile;
+        }
+
+        private void testSymmEncrForKeySizeInner(int keyLength, bool preferAES,
+                int sizePriorToEncr, byte[] inputFileWithEmbeddedFileAsByteArray,
+                java.io.File embeddedFilePriorToEncryption,
+                string userpassword, string ownerpassword)
+        {
+            try
+            {
+                PDDocument document = Loader.loadPDF(inputFileWithEmbeddedFileAsByteArray);
+                using (PDDocument encryptedDoc = encrypt(keyLength, preferAES, sizePriorToEncr, document, "ContainsEmbedded-", permission, userpassword, ownerpassword))
+                {
+                    java.io.File decryptedFile = new java.io.File(TESTRESULTSDIR, "DecryptedContainsEmbedded-" + keyLength + "-bit-" + (preferAES ? "AES" : "RC4") + ".pdf");
+                    encryptedDoc.setAllSecurityToBeRemoved(true);
+                    encryptedDoc.save(decryptedFile);
+
+                    java.io.File extractedEmbeddedFile = extractEmbeddedFile(
+                            new RandomAccessReadBufferedFile(decryptedFile), "decryptedInnerFile-"
+                                    + keyLength + "-bit-" + (preferAES ? "AES" : "RC4") + ".pdf");
+
+                    Assert.Equal(embeddedFilePriorToEncryption.length(), extractedEmbeddedFile.length());
+
+                    // compare the two embedded files
+                    Assert.Equal(
+                            getFileAsByteArray(embeddedFilePriorToEncryption),
+                            getFileAsByteArray(extractedEmbeddedFile));
+                }
+            }
+            catch (IOException ex)
+            {
+                Assert.Fail("IOException during testSymmEncrForKeySizeInner: " + ex.Message);
+            }
+        }
+
+        private byte[] getFileResourceAsByteArray(string testFileName)
+        {
+            try
+            {
+                using (Stream stream = typeof(TestSymmetricKeyEncryption).Assembly.GetManifestResourceStream(testFileName))
+                {
+                    if (stream == null)
+                    {
+                        return null;
+                    }
+
+                    using (MemoryStream ms = new MemoryStream())
+                    {
+                        stream.CopyTo(ms);
+                        return ms.ToArray();
+                    }
+                }
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+        }
+
+        private byte[] getFileAsByteArray(java.io.File f)
+        {
+            return File.ReadAllBytes(f.getAbsolutePath());
+        }
+    }
+}

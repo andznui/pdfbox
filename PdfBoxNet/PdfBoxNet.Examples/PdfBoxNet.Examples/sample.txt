@@ -1,0 +1,10 @@
+This is a test document.
+This demonstrates IKVM.NET wrapping Apache PDFBox.
+
+Key Features:
+- Load PDFs from file or bytes
+- Extract text content
+- Count pages
+- Save PDFs
+
+This wrapper uses Apache PDFBox 3.0.3 via IKVM 8.14.0.
